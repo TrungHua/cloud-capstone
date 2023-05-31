@@ -1,0 +1,304 @@
+service: serverless-blogs-application
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+  - serverless-plugin-tracing
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+
+  tracing:
+    lambda: true
+    apiGateway: true
+
+  environment:
+    POSTS_TABLE: Posts-${self:provider.stage}
+    POSTS_IMAGES_TABLE: Posts-Images-${self:provider.stage}
+    POSTS_CREATED_AT_INDEX: CreatedAtIndex
+    POST_AT_INDEX: PostAtIndex
+    ATTACHMENT_S3_BUCKET: serverless-capstone-images-trung-hua-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 600
+    AUTH_0_SECRET_ID: Auth0Secret-${self:provider.stage}
+    AUTH_0_SECRET_FIELD: auth0Secret
+
+  logs:
+    # Enable API Gateway logs
+    restApi: true
+
+functions:
+  Auth:
+    handler: src/lambda/auth/rs256Auth0Authorizer.handler
+
+  CreatePost:
+    handler: src/lambda/http/createPost.handler
+    events:
+      - http:
+          method: POST
+          path: /posts
+          cors: true
+          authorizer: Auth
+          request:
+            schemas:
+              application/json:
+                schema: ${file(models/create-post-model.json)}
+                name: CreatePostModel
+                description: 'Validation model for creating post'
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: !GetAtt PostsTable.Arn
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+  UpdatePost:
+    handler: src/lambda/http/updatePost.handler
+    events:
+      - http:
+          method: PATCH
+          path: /posts/{postId}
+          cors: true
+          authorizer: Auth
+          request:
+            schemas:
+              application/json:
+                schema: ${file(models/update-post-model.json)}
+                name: UpdatePostModel
+                description: 'Validation model for updating post'
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:UpdateItem
+        Resource: !GetAtt PostsTable.Arn
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+  DeletePost:
+    handler: src/lambda/http/deletePost.handler
+    events:
+      - http:
+          method: DELETE
+          path: /posts/{postId}
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+        Resource: !GetAtt PostsTable.Arn
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    events:
+      - http:
+          method: POST
+          path: /posts/{postId}/attachment
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource: !GetAtt PostsTable.Arn
+
+      - Effect: Allow
+        Action:
+          - s3:GetObject
+          - s3:PutObject
+        Resource: arn:aws:s3:::${self:provider.environment.ATTACHMENT_S3_BUCKET}/*
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+  GetPosts:
+    handler: src/lambda/http/getPosts.handler
+    events:
+      - http:
+          method: GET
+          path: /posts/get-all
+          cors: true
+
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Scan
+        Resource: !GetAtt PostsTable.Arn
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+  GetPostDetailById:
+    handler: src/lambda/http/getPostDetailById.handler
+    events:
+      - http:
+          method: GET
+          path: /posts/{postId}/detail
+          cors: true
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.POSTS_TABLE}/index/${self:provider.environment.POST_AT_INDEX}
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+  GetPostByUserId:
+    handler: src/lambda/http/getPostByUserId.handler
+    events:
+      - http:
+          method: GET
+          path: /posts/{postId}
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource: !GetAtt PostsTable.Arn
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+  GetPostsByUserId:
+    handler: src/lambda/http/getPostsByUserId.handler
+    events:
+      - http:
+          method: GET
+          path: /posts
+          cors: true
+          authorizer: Auth
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.POSTS_TABLE}/index/${self:provider.environment.POSTS_CREATED_AT_INDEX}
+
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: '*'
+
+resources:
+  Resources:
+    GatewayResponseDefault4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'OPTIONS,GET,POST,PUT,DELETE'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: 'ApiGatewayRestApi'
+
+    PostsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: postId
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: postId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.POSTS_TABLE}
+        LocalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.POSTS_CREATED_AT_INDEX}
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        GlobalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.POST_AT_INDEX}
+            KeySchema:
+              - AttributeName: postId
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.ATTACHMENT_S3_BUCKET}
+        OwnershipControls:
+          Rules:
+            - ObjectOwnership: ObjectWriter
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: S3AttachmentBucketPolicy
+          Version: '2012-10-17'
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: '*'
+              Action:
+                - 's3:GetObject'
+                - 's3:PutObject'
+              Resource: arn:aws:s3:::${self:provider.environment.ATTACHMENT_S3_BUCKET}/*
+        Bucket: !Ref AttachmentsBucket
